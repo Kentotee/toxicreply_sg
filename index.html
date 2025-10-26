@@ -1,0 +1,668 @@
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Green Flag Streak Challenge</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
+    <style>
+        /* Clean White/Minimal Theme */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #ffffff; /* Pure White background */
+            transition: background-color 0.3s;
+        }
+        /* Custom scrollbar for chat history (now light gray) */
+        .chat-history::-webkit-scrollbar {
+            width: 8px;
+        }
+        .chat-history::-webkit-scrollbar-thumb {
+            background-color: #d1d5db; /* Light Gray scrollbar */
+            border-radius: 10px;
+        }
+        .chat-history::-webkit-scrollbar-track {
+            background-color: #f3f4f6; /* Very Light Gray track */
+        }
+
+        /* Custom pulse animation */
+        .animate-pulse-custom {
+            animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: .5; }
+        }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+
+    <div class="w-full max-w-xl bg-white shadow-xl rounded-2xl flex flex-col h-[90vh] border border-gray-200 overflow-hidden">
+        
+        <!-- Header & Streak Counter -->
+        <header class="bg-white p-4 text-gray-900 text-center flex justify-between items-center border-b border-gray-200">
+            <h1 class="text-xl font-bold tracking-tight">Green Flag Streak (SG Edition)</h1>
+            
+            <div class="flex items-center space-x-4">
+                <!-- New Casing Preference Dropdown -->
+                <select id="casing-preference" onchange="updateCasingPreference(this.value)"
+                        class="text-sm border border-gray-300 rounded-lg px-3 py-1 bg-gray-50 text-gray-700 font-medium focus:outline-none focus:ring-1 focus:ring-gray-400 transition duration-150">
+                    <option value="casual">Gen Z Case</option>
+                    <option value="proper">Millennial Case</option>
+                </select>
+                <!-- Existing Streak Counter -->
+                <div class="flex items-center space-x-2 bg-indigo-50 text-indigo-700 px-3 py-1 rounded-full border border-indigo-200">
+                    <span class="text-sm font-semibold">Streak:</span>
+                    <span id="streak-counter" class="text-2xl font-black">0</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Chat History -->
+        <div id="chat-history" class="chat-history flex-grow overflow-y-auto p-4 space-y-4 bg-gray-50">
+            <!-- Initial Coach Message will be injected here by renderChatLog -->
+        </div>
+
+        <!-- Input Area -->
+        <div class="p-4 border-t border-gray-200 bg-white">
+            <div id="manual-end-container" class="mb-3 hidden">
+                 <button id="end-streak-button" onclick="manualStreakEnd()"
+                        class="w-full bg-red-100 hover:bg-red-200 text-red-700 font-semibold py-2 rounded-lg transition duration-150 active:scale-[0.98]">
+                    Partner Ghosted/Walked Away (End Streak)
+                </button>
+            </div>
+            <div class="flex space-x-3 items-end">
+                <textarea id="user-input" placeholder="Enter partner's message(s) to continue..." 
+                    rows="3" 
+                    class="flex-grow p-3 border border-gray-300 rounded-xl bg-white text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-gray-400 transition duration-150 resize-none"></textarea>
+                <button id="send-button" onclick="handleGameFlow()"
+                        class="bg-gray-900 hover:bg-gray-700 text-white font-semibold py-3 px-4 rounded-xl shadow-md transition duration-150 active:scale-95 disabled:bg-gray-500 h-1/2">
+                    Submit Partner's Text
+                </button>
+            </div>
+            <p id="game-status" class="text-gray-500 text-sm mt-2 text-center font-medium"></p>
+        </div>
+    </div>
+
+    <script>
+        // --- GEMINI API CONFIGURATION ---
+        const API_MODEL = "gemini-2.5-flash-preview-09-2025";
+        const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${API_MODEL}:generateContent?key=`;
+        const API_KEY = ""; // Canvas will inject the key at runtime
+
+        // --- GAME STATE ---
+        let currentStreak = parseInt(localStorage.getItem('toxicGameStreak') || '0', 10);
+        let chatLog = JSON.parse(localStorage.getItem('toxicGameChatLog') || '[]');
+        let gameStage = localStorage.getItem('gameStage') || 'PARTNER_INPUT'; 
+        let lastAiMessageId = null; // Tracks the last AI message for regeneration
+        let textCasingPreference = localStorage.getItem('textCasingPreference') || 'casual';
+
+        // --- DOM ELEMENTS ---
+        const chatHistoryDiv = document.getElementById('chat-history');
+        const userInput = document.getElementById('user-input');
+        const sendButton = document.getElementById('send-button');
+        const streakCounter = document.getElementById('streak-counter');
+        const gameStatus = document.getElementById('game-status');
+        const manualEndContainer = document.getElementById('manual-end-container');
+        const casingPreferenceSelect = document.getElementById('casing-preference');
+        
+        // --- ANGER DETECTION LOGIC (STILL HARDCODED) ---
+        
+        const ANGER_KEYWORDS = [
+            'stop', 'im done', 'i am done', 'wtf', 'why', 'fine', 'ridiculous', 'seriously', 'never mind', 'fgs', 'ghost', 'leave', 'done', 'not talking', 'siao', 'walao eh', 'shag lah', 'enough'
+        ];
+
+        /**
+         * Utility function for making the Gemini API call with exponential backoff.
+         * @param {object} payload The API payload.
+         * @returns {Promise<object>} The API response body.
+         */
+        async function callGeminiAPI(payload, maxRetries = 5) {
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    const response = await fetch(API_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (response.ok) {
+                        return await response.json();
+                    } else if (response.status === 429 && i < maxRetries - 1) {
+                        // Rate limit exceeded, apply exponential backoff
+                        const delay = Math.pow(2, i) * 1000 + Math.random() * 1000;
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        continue;
+                    } else {
+                        throw new Error(`API Error: ${response.status} ${response.statusText}`);
+                    }
+                } catch (error) {
+                    if (i === maxRetries - 1) {
+                        console.error("Gemini API call failed after max retries:", error);
+                        throw new Error("Failed to connect to the AI model.");
+                    }
+                    // Wait before the next retry (handled by the continue block above)
+                }
+            }
+        }
+        
+        /**
+         * Updates the casing preference and saves it to local storage.
+         * @param {string} value 'casual' or 'proper'.
+         */
+        function updateCasingPreference(value) {
+            textCasingPreference = value;
+            localStorage.setItem('textCasingPreference', value);
+            gameStatus.textContent = `Text style updated to: ${value === 'casual' ? 'Gen Z Case (Lowercase/Typos)' : 'Millennial Case (Proper Casing)'}. This affects the next AI reply.`;
+        }
+
+        /**
+         * Creates a System Instruction that guides the AI's persona and escalation with a Singaporean focus.
+         * @param {number} streak The current streak level.
+         * @returns {string} The system instruction string.
+         */
+        function getSystemInstruction(streak) {
+            let tier;
+            let personaGuidance;
+
+            // Toxicity Tiers: Chill up to Streak 5, Moderate 6-7, Extreme 8+
+            if (streak <= 5) {
+                tier = "CHILL/SUBTLE (Streak 0-5)";
+                personaGuidance = "Be vague, passive-aggressive, or suggest the partner is misunderstanding or overthinking. Use phrases like 'is everything okay on your end, or is it me, lah?' or 'seems like you're missing the point. don't be so sensitive.' avoid direct confrontation.";
+            } else if (streak <= 7) {
+                tier = "MODERATE (Streak 6-7)";
+                personaGuidance = "Be accusatory, defensive, or dismissive. Turn the issue back onto the partner. Use common toxic phrases like 'you always do this lor' or 'you're overreacting, as usual. like that how to settle bto man?'";
+            } else { 
+                tier = "EXTREME (Streak 8+)";
+                personaGuidance = "Use aggressive gaslighting, manipulative ultimatums, or direct, cruel dismissal. Question the partner's sanity or commitment to the relationship. Use phrases like 'if you cannot even trust me, what we doing siao?' or 'i don't have the energy for this lah. you're draining me, like that how to survive in sg?'";
+            }
+            
+            let casingGuidance;
+            if (textCasingPreference === 'casual') {
+                casingGuidance = "Use casual casing. **Do not use Title Case or proper capitalization consistently (e.g., start messages with lowercase). Introduce occasional, minor spelling errors or typos** to simulate fast, careless texting (e.g., 'tommorow', 'becasue').";
+            } else {
+                casingGuidance = "**Use proper capitalization and punctuation consistently**, as in a more formal text style (Title Case, sentence starts capitalized). **Do not introduce typos.**";
+            }
+
+
+            const sgContext = `
+                CULTURAL & LINGUISTIC CONTEXT (CRITICAL):
+                1. **Language:** Use Singlish subtly, incorporating common particles ('lah', 'lor', 'leh', 'sia').
+                2. **Singlish Comma Rule (CRITICAL):** **DO NOT** use a comma immediately before any Singlish particle (e.g., use 'okay lor' NOT 'okay, lor').
+                3. **Texting Style:** ${casingGuidance}
+                4. **Themes:** Introduce conflicts related to Singaporean life: BTO/HDB/property issues, family approval, kiasu comparison with friends/cousins, or high-pressure career/salary expectations.
+                5. **Tone:** Maintain the toxic, manipulative persona while sounding distinctly Singaporean.
+            `;
+
+
+            return `
+                ROLE: You are simulating a manipulative, toxic, and emotionally abusive partner in a text conversation, based in Singapore.
+                GOAL: Generate a response that escalates the conflict and is contextually relevant to the other person's last message, adhering to the specific toxicity tier.
+                
+                TOXICITY TIER: ${tier}
+                PERSONA GUIDANCE: ${personaGuidance}
+                
+                ${sgContext}
+
+                CONSTRAINTS: 
+                1. Your reply must be a single, short text message (1-2 sentences).
+                2. Do not explain your persona or provide context about the streak.
+                3. Do not apologize or use positive language.
+                4. **The message must be unique** within the current simulated chat history to prevent repetition.
+                5. Respond only with the toxic text message itself.
+            `;
+        }
+
+
+        /**
+         * Generates a unique, contextual toxic reply using the Gemini API.
+         * @param {string} lastPartnerMessage - The message the partner just sent.
+         * @returns {Promise<string>} A unique, relevant toxic message.
+         */
+        async function generateToxicReply(lastPartnerMessage) {
+            const systemPrompt = getSystemInstruction(currentStreak);
+
+            const payload = {
+                contents: [{ 
+                    parts: [{ text: `The other person just sent: "${lastPartnerMessage}"` }] 
+                }],
+                systemInstruction: {
+                    parts: [{ text: systemPrompt }]
+                },
+                // Pass chat history for contextual generation and uniqueness check
+                history: chatLog.map(msg => ({ 
+                    role: msg.sender === 'user' ? 'user' : 'model', 
+                    parts: [{ text: msg.text }] 
+                }))
+            };
+
+            try {
+                const result = await callGeminiAPI(payload);
+                const generatedText = result?.candidates?.[0]?.content?.parts?.[0]?.text;
+                
+                if (generatedText) {
+                    return generatedText.trim();
+                } else {
+                    throw new Error("AI failed to generate a reply.");
+                }
+
+            } catch (error) {
+                console.error(error);
+                // Fallback hardcoded reply in case the API fails
+                return textCasingPreference === 'casual' 
+                    ? "you think you very clever is it? better stick to the point lah." 
+                    : "You think you very clever, is it? Better stick to the point lah.";
+            }
+        }
+
+        /**
+         * Checks if the partner's reply indicates anger based on keywords and streak probability.
+         * @param {string} message - The partner's reply.
+         * @returns {boolean} True if the partner got angry, false otherwise.
+         */
+        function isPartnerAngry(message) {
+            const normalizedMessage = message.toLowerCase();
+            
+            // 1. Keyword Check (High chance of anger) - This remains the primary, non-random threat.
+            const keywordMatch = ANGER_KEYWORDS.some(keyword => normalizedMessage.includes(keyword));
+            if (keywordMatch) {
+                return true;
+            }
+
+            // 2. Rising Probability Check (Anger increases with streak length)
+            let angerChance = 0;
+            
+            // UPDATED LOGIC TO MATCH REQUESTED DIFFICULTY CURVE:
+            // 0-9: 0% chance of random anger (Focus on player input keywords)
+            if (currentStreak >= 10 && currentStreak <= 14) {
+                angerChance = 0.05; // 5% chance
+            } else if (currentStreak >= 15 && currentStreak <= 19) {
+                angerChance = 0.20; // 20% chance
+            } else if (currentStreak >= 20) {
+                angerChance = 0.50; // 50% chance
+            }
+
+            return Math.random() < angerChance;
+        }
+
+        // --- REGENERATE LOGIC ---
+
+        function removeRegenerateButton() {
+            if (lastAiMessageId) {
+                const regenContainer = document.getElementById(`regen-control-${lastAiMessageId}`);
+                if (regenContainer) {
+                    regenContainer.remove();
+                }
+            }
+        }
+
+        async function regenerateReply() {
+            if (!lastAiMessageId) {
+                console.error("No last AI message ID to regenerate.");
+                return;
+            }
+
+            startLoading("AI Regenerating...");
+            
+            // Find the previous partner message (should be the message before the one being regenerated)
+            const lastAiIndex = chatLog.findIndex(msg => msg.id === lastAiMessageId);
+            if (lastAiIndex <= 0) {
+                console.error("Cannot find the AI message or preceding partner message in chat log.");
+                stopLoading();
+                return;
+            }
+
+            const lastPartnerText = chatLog[lastAiIndex - 1].text;
+            
+            try {
+                // 1. Generate new toxic reply
+                const newToxicReply = await generateToxicReply(lastPartnerText); 
+
+                // 2. Update chatLog (replace the old message with the new one, keeping the same ID)
+                chatLog[lastAiIndex].text = newToxicReply;
+                localStorage.setItem('toxicGameChatLog', JSON.stringify(chatLog));
+
+                // 3. Update DOM
+                const oldAiMessageDiv = document.getElementById(lastAiMessageId);
+                if (oldAiMessageDiv) {
+                    // Find the bubble content to update
+                    const contentElement = oldAiMessageDiv.querySelector('.message-content');
+                    if (contentElement) {
+                        contentElement.textContent = newToxicReply;
+                    }
+                }
+                
+                // 4. Re-scroll and stop loading
+                chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight;
+                gameStatus.textContent = "Regenerated! Send this new message or regenerate again.";
+
+            } catch (e) {
+                console.error("Regeneration Error:", e);
+                gameStatus.textContent = "ERROR: Failed to regenerate AI reply. Try again.";
+            } finally {
+                stopLoading();
+            }
+        }
+
+        // --- GAME OVER FLOW FUNCTIONS ---
+
+        function restartGame() {
+            // Remove the options UI
+            const optionsDiv = document.getElementById('game-over-options');
+            if (optionsDiv) optionsDiv.remove();
+            
+            // Reset state
+            currentStreak = 0;
+            chatLog = []; 
+            gameStage = 'PARTNER_INPUT';
+            lastAiMessageId = null; // Clear AI message ID
+
+            // Refresh UI
+            updateStreakDisplay();
+            localStorage.setItem('toxicGameChatLog', JSON.stringify(chatLog));
+            updateGameStatus();
+            renderChatLog();
+            stopLoading();
+            userInput.focus();
+        }
+
+        async function bypassAngerFlag(inputMessageId) {
+            startLoading("AI Generating Reply...");
+            
+            // Treat the failure as a success and continue the cycle
+            currentStreak++;
+            updateStreakDisplay();
+            
+            // Remove the options UI
+            const optionsDiv = document.getElementById('game-over-options');
+            if (optionsDiv) optionsDiv.remove();
+            
+            // 1. Continue cycle: Generate next toxic reply (red bubble)
+            const lastPartnerText = chatLog[chatLog.length - 1].text; // Get the angry message that just failed
+            const toxicReply = await generateToxicReply(lastPartnerText); 
+            
+            // Add streak continuation message
+            const successDiv = document.createElement('div');
+            successDiv.className = `text-center p-2 my-2 rounded-lg text-xs font-bold bg-green-500 text-white`; // High-contrast success message
+            successDiv.innerHTML = `GREEN FLAG UNLOCKED! Current Streak: ${currentStreak}. Send this next message:`;
+            chatHistoryDiv.appendChild(successDiv);
+
+            // Add next toxic reply
+            const aiReplyId = `${inputMessageId}-ai-bypassed`;
+            lastAiMessageId = aiReplyId; // Set new ID
+            addMessageToChat(toxicReply, 'ai', aiReplyId, true); // Show button
+            chatLog.push({ id: aiReplyId, text: toxicReply, sender: 'ai' });
+            
+            // Update state and UI
+            localStorage.setItem('toxicGameChatLog', JSON.stringify(chatLog));
+            updateGameStatus();
+            stopLoading();
+            userInput.focus();
+        }
+
+        function showGameOverOptions(inputMessageId, isManual = false) {
+            removeRegenerateButton(); // Ensure the regen button is hidden
+
+            // Set the final score display
+            const reasonText = isManual 
+                ? `Partner ghosted/left. Final Green Flag Streak: ${currentStreak}`
+                : `Partner's reply triggered anger. Final Green Flag Streak: ${currentStreak}`;
+
+            const reasonDiv = document.createElement('div');
+            reasonDiv.className = `text-center p-3 my-2 rounded-lg text-sm font-bold ${isManual ? 'bg-indigo-600 text-white' : 'bg-red-600 text-white'}`;
+            reasonDiv.innerHTML = `CHALLENGE FAILED! ${reasonText}`;
+            
+            const optionsDiv = document.createElement('div');
+            optionsDiv.id = 'game-over-options';
+            optionsDiv.className = 'p-4 bg-gray-100 rounded-lg shadow-inner space-y-2';
+            
+            optionsDiv.innerHTML = `
+                <p class="text-sm font-semibold text-gray-800 text-center border-b border-gray-300 pb-2">Your streak has ended. What next?</p>
+                <button onclick="restartGame()" class="w-full bg-gray-900 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-xl transition duration-150">
+                    START NEW GAME
+                </button>
+                <button onclick="bypassAngerFlag('${inputMessageId}')" class="w-full bg-indigo-500 hover:bg-indigo-400 text-white font-bold py-2 px-4 rounded-xl transition duration-150">
+                    BYPASS FLAG (Mark as Error & Continue Streak)
+                </button>
+            `;
+            
+            chatHistoryDiv.appendChild(reasonDiv);
+            chatHistoryDiv.appendChild(optionsDiv);
+            
+            // Disable input elements but don't reset state yet
+            userInput.disabled = true;
+            sendButton.disabled = true;
+            manualEndContainer.classList.add('hidden'); // Hide manual end button
+            
+            chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight;
+        }
+
+        // --- UI & STATE MANAGEMENT ---
+
+        function updateStreakDisplay() {
+            streakCounter.textContent = currentStreak;
+            localStorage.setItem('toxicGameStreak', currentStreak.toString());
+        }
+
+        function updateGameStatus() {
+            localStorage.setItem('gameStage', gameStage);
+            if (gameStage === 'PARTNER_INPUT') {
+                gameStatus.textContent = "Enter your partner's first message(s) to start the cycle.";
+                sendButton.textContent = 'Submit Partner\'s Initial Text';
+                userInput.placeholder = "Enter partner's initial message(s)...";
+                manualEndContainer.classList.add('hidden');
+            } else {
+                gameStatus.textContent = "Partner replied! Enter their reply (single or multiple texts) to see if the streak holds. Use the Regenerate button if the AI text is not good.";
+                sendButton.textContent = 'Submit Partner\'s Reply';
+                userInput.placeholder = "Enter your partner's reply(s)...";
+                manualEndContainer.classList.remove('hidden');
+            }
+        }
+
+        /**
+         * Adds a message to the chat history.
+         * @param {string} text The message content.
+         * @param {string} sender 'user' or 'ai'.
+         * @param {string} [id] Optional unique ID for the message element.
+         * @param {boolean} [showRegenButton] Only true for the very last AI message.
+         */
+        function addMessageToChat(text, sender, id = null, showRegenButton = false) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `flex ${sender === 'user' ? 'justify-end' : 'justify-start'}`;
+            if (id) messageDiv.id = id;
+
+            const bubble = document.createElement('div');
+            // user (Partner's text) is light gray. ai (Toxic Reply) is light blue.
+            bubble.className = `p-3 whitespace-pre-wrap rounded-xl max-w-[70%] shadow-sm ${
+                sender === 'user'
+                    ? 'bg-gray-200 text-gray-900 rounded-br-none' 
+                    : 'bg-blue-100 text-gray-900 rounded-tl-none' 
+            }`;
+            
+            if (sender === 'ai') {
+                const nameTag = document.createElement('p');
+                nameTag.className = 'font-semibold text-xs text-blue-700'; 
+                nameTag.textContent = 'TOXIC REPLY (Copy & Send)';
+                bubble.appendChild(nameTag);
+            } else if (sender === 'user') {
+                const nameTag = document.createElement('p');
+                nameTag.className = 'font-semibold text-xs text-indigo-700'; 
+                nameTag.textContent = 'Partner\'s Text';
+                bubble.appendChild(nameTag);
+            }
+            
+            const content = document.createElement('p');
+            content.className = 'text-sm leading-snug message-content'; // Added class for easy targeting
+            content.textContent = text;
+            bubble.appendChild(content);
+
+            messageDiv.appendChild(bubble);
+            chatHistoryDiv.appendChild(messageDiv);
+
+            if (sender === 'ai' && showRegenButton) {
+                // Add regeneration button container immediately after the AI message div
+                const regenContainer = document.createElement('div');
+                regenContainer.id = `regen-control-${id}`;
+                regenContainer.className = 'flex justify-start pt-1 pb-4'; // Added padding for spacing
+                regenContainer.innerHTML = `
+                    <button onclick="regenerateReply()" class="flex items-center space-x-1 text-xs text-gray-500 hover:text-gray-700 font-medium transition duration-150">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m15.356 2H20V4m-2 16v-5h-.582m0 0a8.001 8.001 0 00-15.356-2H4V20"></path></svg>
+                        <span>Regenerate Toxic Reply</span>
+                    </button>
+                `;
+                chatHistoryDiv.appendChild(regenContainer);
+            }
+            
+            // Scroll to the bottom
+            chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight;
+        }
+
+        function renderChatLog() {
+            chatHistoryDiv.innerHTML = ''; // Clear existing chat
+            // Re-add initial coach message (now short)
+            const initialCoach = document.createElement('div');
+            initialCoach.className = 'flex justify-start';
+            initialCoach.innerHTML = `
+                <div class="bg-gray-100 text-gray-800 p-3 rounded-xl rounded-tl-none max-w-[70%] shadow-sm border border-gray-200">
+                    <p class="font-semibold text-xs text-gray-600">Game Coach</p>
+                    <p class="text-sm leading-snug">send your partner the generated message and see how much of a green flag your partner is, messages get more toxic as you last longer</p>
+                </div>
+            `;
+            chatHistoryDiv.appendChild(initialCoach);
+
+
+            chatLog.forEach((msg, index) => {
+                // Only show regeneration button on the very last AI message
+                const isLastAiMessage = (index === chatLog.length - 1 && msg.sender === 'ai');
+                if (msg.sender !== 'game') {
+                     addMessageToChat(msg.text, msg.sender, msg.id, isLastAiMessage);
+                     if (isLastAiMessage) {
+                        lastAiMessageId = msg.id; // Ensure ID is tracked on render
+                     }
+                }
+            });
+            chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight;
+        }
+
+        function manualStreakEnd() {
+            if (currentStreak > 0) {
+                const inputMessageId = `msg-${Date.now()}`;
+                addMessageToChat(`🚶 PARTNER GHOSTED. The conversation was ended manually.`, 'game-end', `${inputMessageId}-end-manual`);
+                showGameOverOptions(inputMessageId, true); // True for manual flag
+            }
+        }
+        
+        // --- MAIN GAME FLOW HANDLER ---
+
+        function startLoading(message) {
+            sendButton.disabled = true;
+            sendButton.innerHTML = `<span class="animate-pulse-custom">${message}</span>`;
+            userInput.disabled = true; // Disable input while loading
+        }
+
+        function stopLoading() {
+            sendButton.disabled = false;
+            userInput.disabled = false; // Enable input after loading
+        }
+
+        async function handleGameFlow() {
+            // Read from textarea. Since it is a textarea, it can contain multiple lines.
+            const input = userInput.value.trim(); 
+            if (!input) return;
+            
+            startLoading("AI Generating Reply...");
+            const inputMessageId = `msg-${Date.now()}`;
+            
+            // Clear previous regeneration button and ID before processing new flow
+            removeRegenerateButton();
+            lastAiMessageId = null; 
+            
+            try {
+                if (gameStage === 'PARTNER_INPUT') {
+                    // Stage 1: User enters partner's message, Bot provides toxic reply
+                    
+                    // 1. Add partner's text (Partner's bubble)
+                    addMessageToChat(input, 'user', `${inputMessageId}-user`);
+                    chatLog.push({ id: `${inputMessageId}-user`, text: input, sender: 'user' });
+
+                    // 2. Generate and add toxic reply (AI bubble)
+                    const toxicReply = await generateToxicReply(input); // API Call
+                    const aiReplyId = `${inputMessageId}-ai`;
+                    lastAiMessageId = aiReplyId; // Set ID
+                    addMessageToChat(toxicReply, 'ai', lastAiMessageId, true); // Show button
+                    chatLog.push({ id: lastAiMessageId, text: toxicReply, sender: 'ai' });
+                    
+                    // 3. Update state for the next turn
+                    gameStage = 'PARTNER_REPLY';
+
+                } else if (gameStage === 'PARTNER_REPLY') {
+                    // Stage 2: User enters partner's reply, Bot evaluates anger
+                    
+                    // 1. Add partner's reply (Partner's bubble)
+                    addMessageToChat(input, 'user', `${inputMessageId}-user`);
+                    chatLog.push({ id: `${inputMessageId}-user`, text: input, sender: 'user' });
+
+                    // 2. Evaluate Anger
+                    const angry = isPartnerAngry(input);
+                    
+                    if (angry) {
+                        // Streak Ends - Show options instead of resetting
+                        addMessageToChat(`😡 PARTNER GOT ANGRY, WALAO. The toxicity level was too high.`, 'game-end', `${inputMessageId}-end-fail`);
+                        showGameOverOptions(inputMessageId);
+                        
+                    } else {
+                        // Streak Continues
+                        currentStreak++;
+                        updateStreakDisplay();
+                        
+                        // 3. Generate next toxic reply (AI bubble)
+                        const toxicReply = await generateToxicReply(input); // API Call
+                        
+                        // Add streak continuation message
+                        const successDiv = document.createElement('div');
+                        successDiv.className = `text-center p-2 my-2 rounded-lg text-xs font-bold bg-green-500 text-white`;
+                        successDiv.innerHTML = `GREEN FLAG UNLOCKED! Current Streak: ${currentStreak}. Send this next message:`;
+                        chatHistoryDiv.appendChild(successDiv);
+
+                        // Add next toxic reply
+                        const aiReplyId = `${inputMessageId}-ai`;
+                        lastAiMessageId = aiReplyId; // Set new ID
+                        addMessageToChat(toxicReply, 'ai', aiReplyId, true); // Show button
+                        chatLog.push({ id: aiReplyId, text: toxicReply, sender: 'ai' });
+
+                        // 4. Update state for the next turn
+                        gameStage = 'PARTNER_REPLY'; // Stays in PARTNER_REPLY stage
+                    }
+                }
+            } catch (e) {
+                console.error("Game Error:", e);
+                // Display error to user
+                const errorDiv = document.createElement('div');
+                errorDiv.className = `text-center p-3 my-2 rounded-lg text-sm font-bold bg-red-800 text-red-200`;
+                errorDiv.innerHTML = `ERROR: Failed to generate AI reply. Check console for details.`;
+                chatHistoryDiv.appendChild(errorDiv);
+            } finally {
+                // Only stop loading if game is not over, otherwise showGameOverOptions handles disabling
+                if (!document.getElementById('game-over-options')) {
+                    stopLoading();
+                }
+                localStorage.setItem('toxicGameChatLog', JSON.stringify(chatLog));
+                userInput.value = '';
+                updateGameStatus();
+            }
+        }
+        
+        // Initialize on load
+        document.addEventListener('DOMContentLoaded', () => {
+            updateStreakDisplay();
+            renderChatLog();
+            updateGameStatus();
+            userInput.focus();
+            // Set initial value for the select element
+            if (casingPreferenceSelect) {
+                casingPreferenceSelect.value = textCasingPreference;
+            }
+        });
+
+    </script>
+</body>
+</html>

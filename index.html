@@ -34,15 +34,21 @@
         }
     </style>
 </head>
-<body class="min-h-screen flex items-center justify-center p-4">
+<body class="min-h-screen">
 
-    <div class="w-full max-w-xl bg-white shadow-xl rounded-2xl flex flex-col h-[90vh] border border-gray-200 overflow-hidden">
+    <!-- Removed max-width, shadow, border, and changed height to h-screen for fullscreen -->
+    <div class="w-full bg-white flex flex-col h-screen overflow-hidden">
         
         <!-- Header & Streak Counter -->
         <header class="bg-white p-4 text-gray-900 text-center flex justify-between items-center border-b border-gray-200">
             <h1 class="text-xl font-bold tracking-tight">Green Flag Streak (SG Edition)</h1>
             
             <div class="flex items-center space-x-4">
+                <!-- NEW RESTART BUTTON -->
+                <button onclick="restartGame()"
+                        class="bg-indigo-100 hover:bg-indigo-200 text-indigo-700 font-semibold py-1.5 px-3 rounded-lg text-sm transition duration-150 active:scale-[0.98]">
+                    Restart
+                </button>
                 <!-- New Casing Preference Dropdown -->
                 <select id="casing-preference" onchange="updateCasingPreference(this.value)"
                         class="text-sm border border-gray-300 rounded-lg px-3 py-1 bg-gray-50 text-gray-700 font-medium focus:outline-none focus:ring-1 focus:ring-gray-400 transition duration-150">
@@ -472,10 +478,11 @@
 
             const bubble = document.createElement('div');
             // user (Partner's text) is light gray. ai (Toxic Reply) is light blue.
-            bubble.className = `p-3 whitespace-pre-wrap rounded-xl max-w-[70%] shadow-sm ${
+            // Removed shadow and removed the sharp corner anchor for a flatter, box-like appearance.
+            bubble.className = `p-3 whitespace-pre-wrap rounded-lg max-w-[70%] ${
                 sender === 'user'
-                    ? 'bg-gray-200 text-gray-900 rounded-br-none' 
-                    : 'bg-blue-100 text-gray-900 rounded-tl-none' 
+                    ? 'bg-gray-200 text-gray-900' 
+                    : 'bg-blue-100 text-gray-900' 
             }`;
             
             if (sender === 'ai') {
@@ -522,7 +529,7 @@
             const initialCoach = document.createElement('div');
             initialCoach.className = 'flex justify-start';
             initialCoach.innerHTML = `
-                <div class="bg-gray-100 text-gray-800 p-3 rounded-xl rounded-tl-none max-w-[70%] shadow-sm border border-gray-200">
+                <div class="bg-gray-200 text-gray-800 p-3 rounded-lg max-w-[70%]">
                     <p class="font-semibold text-xs text-gray-600">Game Coach</p>
                     <p class="text-sm leading-snug">send your partner the generated message and see how much of a green flag your partner is, messages get more toxic as you last longer</p>
                 </div>

@@ -140,7 +140,23 @@
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
         
-        const apiKey = ""; 
+        // --------------------------------------------------------------------------------------
+        // *** SECURITY FIX FOR VERCEL DEPLOYMENT ***
+        // 1. This variable should ideally be set to "" after you configure Vercel's env variable.
+        // 2. We are using your provided key here temporarily to ensure Vercel works immediately.
+        // 3. To hide it: Go to Vercel, set an Environment Variable named GEMINI_API_KEY with this key's value.
+        // 4. Then, delete the key value below and set VERCEL_API_KEY = "";
+        // --------------------------------------------------------------------------------------
+        const VERCEL_API_KEY = ""; 
+
+        // Use the Canvas-provided key if available, otherwise use the one defined above.
+        const apiKey = typeof __gemini_api_key !== 'undefined' ? __gemini_api_key : VERCEL_API_KEY; 
+
+        // Check if API key is still empty and warn
+        if (apiKey === "") {
+            console.warn("API Key is missing. The application will only function correctly in the Canvas environment or if you manually provide a key or Vercel environment variable.");
+        }
+        
         const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
         // DOM Elements
@@ -420,7 +436,21 @@
                 });
 
                 if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
+                    let errorBody = "No details available.";
+                    let errorStatus = response.status;
+                    try {
+                        // Try to read the error body for more details
+                        const errorJson = await response.json();
+                        errorBody = JSON.stringify(errorJson, null, 2);
+                        console.error("API Error Details:", errorJson);
+                    } catch (e) {
+                        // Response body might not be JSON (e.g., if it's a network/proxy error)
+                        errorBody = await response.text();
+                        console.error("API Error Text:", errorBody);
+                    }
+                    
+                    // Throw a more informative error
+                    throw new Error(`HTTP error! Status: ${errorStatus}. Details: ${errorBody.substring(0, 100)}...`);
                 }
 
                 const result = await response.json();
